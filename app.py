@@ -58,7 +58,7 @@ def initialize_model(args, tokenizer):
                   ["seg_token_idx", "bbox_token_idx", "eop_token_idx", "bop_token_idx"]}
 
     model = GLaMMForCausalLM.from_pretrained(
-        args.version, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, **model_args)
+        args.version, torch_dtype=torch.float16, low_cpu_mem_usage=True, **model_args).eval()
     print('\033[92m' + "---- Initialized model from: {} ----".format(args.version) + '\033[0m')
 
     # Configure model tokens
@@ -78,8 +78,8 @@ def prepare_model_for_inference(model, args):
     )
     model.get_model().initialize_vision_modules(model.get_model().config)
     vision_tower = model.get_model().get_vision_tower()
-    vision_tower.to(dtype=torch.bfloat16, device=args.local_rank)
-    model = model.bfloat16().cuda()
+    vision_tower.to(dtype=torch.float16, device=args.local_rank).eval().cuda()
+    model = model.float16().cuda().eval()
     return model
 
 
@@ -107,7 +107,7 @@ def region_enc_processor(orig_size, post_size, bbox_img):
         # Normalizing the bounding boxes
         norm_bboxes = ori_bboxes / np.array([post_w, post_h, post_w, post_h])
         # Converting to tensor, handling device and data type as in the original code
-        tensor_list.append(torch.tensor(norm_bboxes, device='cuda').half().to(torch.bfloat16))
+        tensor_list.append(torch.tensor(norm_bboxes, device='cuda').half().to(torch.float16))
 
     if len(tensor_list) > 1:
         bboxes = torch.stack(tensor_list, dim=1)
@@ -214,14 +214,14 @@ def inference(input_str, all_inputs, follow_up, generate):
     # Prepare input for Global Image Encoder
     global_enc_image = global_enc_processor.preprocess(
         image_np, return_tensors="pt")["pixel_values"][0].unsqueeze(0).cuda()
-    global_enc_image = global_enc_image.bfloat16()
+    global_enc_image = global_enc_image.float16()
 
     # Prepare input for Grounding Image Encoder
     image = transform.apply_image(image_np)
     resize_list = [image.shape[:2]]
     grounding_enc_image = (grounding_enc_processor(torch.from_numpy(image).permute(2, 0, 1).
                                                    contiguous()).unsqueeze(0).cuda())
-    grounding_enc_image = grounding_enc_image.bfloat16()
+    grounding_enc_image = grounding_enc_image.float16()
 
     # Prepare input for Region Image Encoder
     post_h, post_w = global_enc_image.shape[1:3]
@@ -271,13 +271,13 @@ if __name__ == "__main__":
     tokenizer = setup_tokenizer_and_special_tokens(args)
     model = initialize_model(args, tokenizer)
     model = prepare_model_for_inference(model, args)
-    global_enc_processor = CLIPImageProcessor.from_pretrained(model.config.vision_tower)
+    global_enc_processor = CLIPImageProcessor.from_pretrained(model.config.vision_tower).cuda().eval()
     transform = ResizeLongestSide(args.image_size)
     model.eval()
 
-    st_pipe = AutoPipelineForInpainting.from_pretrained(
-        "diffusers/stable-diffusion-xl-1.0-inpainting-0.1", torch_dtype=torch.float16, variant="fp16"
-    ).to("cuda")
+    #st_pipe = AutoPipelineForInpainting.from_pretrained(
+    #    "diffusers/stable-diffusion-xl-1.0-inpainting-0.1", torch_dtype=torch.float16, variant="fp16"
+    #).to("cuda")
 
     conv = None
     # Only to Display output
@@ -293,4 +293,4 @@ if __name__ == "__main__":
         description=description, article=article, theme=gr.themes.Soft(), examples=examples, allow_flagging="auto", )
 
     demo.queue()
-    demo.launch()
+    demo.launch(share=True)
